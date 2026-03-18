@@ -1,18 +1,13 @@
 #!/usr/bin/env python3
 """
 Google Search Scraper
-Uses Google Custom Search API to extract search results and page content.
+Uses Serper.dev API to extract real Google search results and page content.
 
-Setup (one-time):
-  1. Get a free API key at: https://console.cloud.google.com/apis/credentials
-     (Enable "Custom Search API" in the API library)
-  2. Create a search engine at: https://programmablesearchengine.google.com/
-     (Turn on "Search the entire web")
-  3. Set env vars:
-       export GOOGLE_API_KEY="your_api_key"
-       export GOOGLE_CSE_ID="your_search_engine_id"
-
-Free tier: 100 queries/day. More info: https://developers.google.com/custom-search/v1/overview
+Setup (one-time, free):
+  1. Sign up at: https://serper.dev  (no credit card — 2,500 free searches)
+  2. Copy your API key from the dashboard
+  3. Set env var:
+       export SERPER_API_KEY="your_api_key"
 """
 
 import requests
@@ -38,9 +33,8 @@ try:
 except ImportError:
     HAS_TRAFILATURA = False
 
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
-GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID", "")
-GOOGLE_CSE_URL = "https://www.googleapis.com/customsearch/v1"
+SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
+SERPER_URL = "https://google.serper.dev/search"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -53,119 +47,118 @@ THREAD_POOL_SIZE = 5
 
 BATCH_DEFAULTS = {
     "gl": "",
-    "lr": "",
-    "cr": "",
     "hl": "en",
     "max_results": MAX_RESULTS,
     "date_restrict": "",
 }
 
+# Map Google-style date_restrict (d7, m1, y1) → Serper tbs param
+DATE_RESTRICT_MAP = {
+    "d1": "qdr:d",
+    "d7": "qdr:w",
+    "d30": "qdr:m",
+    "m1": "qdr:m",
+    "m3": "qdr:m3",
+    "m6": "qdr:m6",
+    "y1": "qdr:y",
+}
+
 
 def _check_credentials():
-    if not GOOGLE_API_KEY or not GOOGLE_CSE_ID:
+    if not SERPER_API_KEY:
         print(
-            "\n❌  Google API credentials not set.\n"
+            "\n❌  Serper API key not set.\n"
             "\n"
-            "Quick setup (free, takes ~5 minutes):\n"
-            "  1. Go to: https://console.cloud.google.com/apis/credentials\n"
-            "     → Create a new API key\n"
-            "     → Enable 'Custom Search API' in the API Library\n"
-            "\n"
-            "  2. Go to: https://programmablesearchengine.google.com/\n"
-            "     → Create a new search engine\n"
-            "     → Enable 'Search the entire web'\n"
-            "     → Copy the Search Engine ID (cx)\n"
-            "\n"
-            "  3. Set environment variables:\n"
-            "       export GOOGLE_API_KEY='your_api_key'\n"
-            "       export GOOGLE_CSE_ID='your_search_engine_id'\n"
-            "\n"
-            "  Free tier: 100 queries/day\n"
+            "Quick setup (free, 2,500 searches included — no credit card):\n"
+            "  1. Go to: https://serper.dev\n"
+            "  2. Sign up and copy your API key from the dashboard\n"
+            "  3. Set environment variable:\n"
+            "       export SERPER_API_KEY='your_api_key'\n"
         )
         sys.exit(1)
+
+
+def _map_date_restrict(date_restrict: str) -> str:
+    """Convert Google-style date_restrict to Serper tbs format."""
+    if not date_restrict:
+        return ""
+    if date_restrict.startswith("qdr:"):
+        return date_restrict
+    return DATE_RESTRICT_MAP.get(date_restrict, "")
 
 
 def extract_google_results(
     query: str,
     max_results: int = MAX_RESULTS,
     gl: str = "",
-    lr: str = "",
-    cr: str = "",
     hl: str = "en",
     date_restrict: str = "",
+    # lr / cr kept for CLI/API compat — Serper uses gl+hl instead
+    lr: str = "",
+    cr: str = "",
 ) -> list:
     """
-    Extract Google search results using the Custom Search API.
+    Extract Google search results via Serper.dev API.
 
     Args:
         query:        Search query string.
         max_results:  Number of results to return (1-100).
-        gl:           Geo bias country code, e.g. 'fr', 'de', 'us'.
-        lr:           Language restrict, e.g. 'lang_fr', 'lang_en'.
-        cr:           Country restrict, e.g. 'countryFR', 'countryUS'.
-        hl:           Interface language, e.g. 'en', 'fr'. Default 'en'.
-        date_restrict: Date restrict, e.g. 'd7' (7 days), 'm1' (1 month).
+        gl:           Country code for geo targeting, e.g. 'fr', 'de', 'us'.
+        hl:           Language of results, e.g. 'fr', 'de', 'en' (default 'en').
+        date_restrict: Restrict to recent results: 'd1','d7','m1','m3','y1'.
+        lr:           (Legacy param — derived to hl if hl not set.)
+        cr:           (Legacy param — not used by Serper.)
     """
+    # Derive hl from lr if not explicitly set (e.g. "lang_fr" → "fr")
+    if not hl and lr and lr.startswith("lang_"):
+        hl = lr[5:]
+
     locale_parts = [
         f"gl={gl}" if gl else "",
-        f"lr={lr}" if lr else "",
-        f"cr={cr}" if cr else "",
+        f"hl={hl}" if hl else "",
         f"date={date_restrict}" if date_restrict else "",
     ]
     locale_info = " | ".join(p for p in locale_parts if p)
     suffix = f" [{locale_info}]" if locale_info else ""
     print(f"🔍 Searching Google for: '{query}'{suffix}")
 
+    payload = {
+        "q": query,
+        "num": min(max_results, 100),
+        "hl": hl or "en",
+    }
+    if gl:
+        payload["gl"] = gl
+    tbs = _map_date_restrict(date_restrict)
+    if tbs:
+        payload["tbs"] = tbs
+
+    api_headers = {
+        "X-API-KEY": SERPER_API_KEY,
+        "Content-Type": "application/json",
+    }
+
+    try:
+        resp = requests.post(SERPER_URL, json=payload, headers=api_headers, timeout=REQUEST_TIMEOUT)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        print(f"❌ API error: {e}")
+        return []
+
+    data = resp.json()
+
+    if "error" in data:
+        print(f"❌ API error: {data['error']}")
+        return []
+
     results = []
-    for start in range(1, max_results + 1, 10):
-        if start > 91:
-            break
-        batch_size = min(10, max_results - len(results))
-        params = {
-            "key": GOOGLE_API_KEY,
-            "cx": GOOGLE_CSE_ID,
-            "q": query,
-            "num": batch_size,
-            "start": start,
-            "hl": hl or "en",
-        }
-        if gl:
-            params["gl"] = gl
-        if lr:
-            params["lr"] = lr
-        if cr:
-            params["cr"] = cr
-        if date_restrict:
-            params["dateRestrict"] = date_restrict
-
-        try:
-            resp = requests.get(GOOGLE_CSE_URL, params=params, timeout=REQUEST_TIMEOUT)
-            resp.raise_for_status()
-        except requests.RequestException as e:
-            print(f"❌ API error: {e}")
-            break
-
-        data = resp.json()
-
-        if "error" in data:
-            err = data["error"]
-            print(f"❌ API error {err.get('code')}: {err.get('message')}")
-            break
-
-        items = data.get("items", [])
-        if not items:
-            break
-
-        for item in items:
-            results.append({
-                "title": item.get("title", ""),
-                "url": item.get("link", ""),
-                "description": item.get("snippet", "").replace("\n", " "),
-                "content": None,
-            })
-
-        if len(results) >= max_results:
-            break
+    for item in data.get("organic", []):
+        results.append({
+            "title": item.get("title", ""),
+            "url": item.get("link", ""),
+            "description": item.get("snippet", "").replace("\n", " "),
+            "content": None,
+        })
 
     print(f"✅ Found {len(results)} results")
     return results[:max_results]
@@ -226,7 +219,7 @@ def save_to_csv(results: list, filename: str):
 
 def save_batch_to_csv(batch_results: list, filename: str):
     """Save batch results (multiple queries) to a single CSV with provenance columns."""
-    fieldnames = ["query_index", "query", "gl", "lr", "cr", "title", "url", "description", "content"]
+    fieldnames = ["query_index", "query", "gl", "hl", "title", "url", "description", "content"]
     with open(filename, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -239,7 +232,7 @@ def load_batch_file(path: str) -> list:
     Load a batch query file (CSV or JSON) and return a normalised list of job dicts.
 
     CSV format — header row required:
-        query, gl, lr, cr, hl, max_results, date_restrict
+        query, gl, hl, max_results, date_restrict
         (only 'query' is required; all other columns are optional)
 
     JSON format — top-level array of objects with the same fields.
@@ -267,7 +260,6 @@ def load_batch_file(path: str) -> list:
             try:
                 job["max_results"] = int(job["max_results"])
             except (ValueError, TypeError):
-                print(f"  ⚠️  Invalid max_results for query '{item['query']}', using default {MAX_RESULTS}.")
                 job["max_results"] = MAX_RESULTS
             jobs.append(job)
 
@@ -285,7 +277,6 @@ def load_batch_file(path: str) -> list:
                 try:
                     job["max_results"] = int(job["max_results"])
                 except (ValueError, TypeError):
-                    print(f"  ⚠️  Invalid max_results for query '{job['query']}', using default {MAX_RESULTS}.")
                     job["max_results"] = MAX_RESULTS
                 jobs.append(job)
     else:
@@ -305,14 +296,12 @@ def run_batch(jobs: list, output_file: str):
         results = extract_google_results(
             query=job["query"],
             max_results=job["max_results"],
-            gl=job["gl"],
-            lr=job["lr"],
-            cr=job["cr"],
-            hl=job["hl"],
-            date_restrict=job["date_restrict"],
+            gl=job.get("gl", ""),
+            hl=job.get("hl", "en"),
+            date_restrict=job.get("date_restrict", ""),
         )
         if not results:
-            print(f"  No results, skipping.")
+            print("  No results, skipping.")
             continue
 
         results = fetch_all_content(results)
@@ -320,9 +309,8 @@ def run_batch(jobs: list, output_file: str):
         for row in results:
             row["query_index"] = idx + 1
             row["query"] = job["query"]
-            row["gl"] = job["gl"]
-            row["lr"] = job["lr"]
-            row["cr"] = job["cr"]
+            row["gl"] = job.get("gl", "")
+            row["hl"] = job.get("hl", "en")
 
         all_results.extend(results)
 
@@ -336,18 +324,18 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Google Search Scraper — extracts results via Google Custom Search API.",
+        description="Google Search Scraper — extracts real Google results via Serper.dev API.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 examples:
   # Single query (default settings)
   python google_scraper.py "machine learning"
 
-  # Convenience country + language flags
+  # French results in French
   python google_scraper.py "intelligence artificielle" --country fr --language fr
 
-  # All three locale params + date filter
-  python google_scraper.py "climat" --gl fr --lr lang_fr --cr countryFR --date-restrict d30
+  # German results, last 30 days
+  python google_scraper.py "Klimawandel" --gl de --hl de --date-restrict m1
 
   # More results with custom output file
   python google_scraper.py "AI research" --max-results 50 --output ai.csv
@@ -355,97 +343,46 @@ examples:
   # Batch mode (CSV or JSON input)
   python google_scraper.py --batch queries.csv
   python google_scraper.py --batch queries.json --output combined.csv
+
+date-restrict values:
+  d1=past day, d7=past week, m1=past month, m3=past 3 months, y1=past year
         """,
     )
 
-    parser.add_argument(
-        "query",
-        nargs="?",
-        default=None,
-        help="Search query string (omit when using --batch).",
-    )
+    parser.add_argument("query", nargs="?", default=None,
+                        help="Search query (omit when using --batch).")
 
     # Convenience aliases
-    parser.add_argument(
-        "--country",
-        dest="country_shortcut",
-        default="",
-        metavar="CODE",
-        help="2-letter country code for geo bias (alias for --gl). E.g. 'fr', 'de', 'us'.",
-    )
-    parser.add_argument(
-        "--language",
-        dest="language_shortcut",
-        default="",
-        metavar="CODE",
-        help="2-letter language code (alias for --lr; auto-prefixed with 'lang_'). E.g. 'fr' → 'lang_fr'.",
-    )
+    parser.add_argument("--country", dest="country_shortcut", default="", metavar="CODE",
+                        help="Country code for geo targeting (alias for --gl). E.g. 'fr', 'de', 'us'.")
+    parser.add_argument("--language", dest="language_shortcut", default="", metavar="CODE",
+                        help="Language of results (alias for --hl). E.g. 'fr', 'de', 'en'.")
 
     # Raw API params
-    parser.add_argument(
-        "--gl",
-        default="",
-        metavar="CODE",
-        help="Geo bias country code (overrides --country). E.g. 'fr'.",
-    )
-    parser.add_argument(
-        "--lr",
-        default="",
-        metavar="LANG_CODE",
-        help="Language restrict (overrides --language). E.g. 'lang_fr'.",
-    )
-    parser.add_argument(
-        "--cr",
-        default="",
-        metavar="COUNTRY_CODE",
-        help="Country restrict — pages from this country. E.g. 'countryFR'.",
-    )
-    parser.add_argument(
-        "--hl",
-        default="en",
-        metavar="CODE",
-        help="Interface language. Default: 'en'.",
-    )
-    parser.add_argument(
-        "--date-restrict",
-        dest="date_restrict",
-        default="",
-        metavar="PERIOD",
-        help="Restrict to recent results. E.g. 'd7' (7 days), 'm1' (1 month), 'y1' (1 year).",
-    )
+    parser.add_argument("--gl", default="", metavar="CODE",
+                        help="Country code (overrides --country). E.g. 'fr'.")
+    parser.add_argument("--hl", default="en", metavar="CODE",
+                        help="Language of results (overrides --language). Default: 'en'.")
 
-    parser.add_argument(
-        "--max-results",
-        dest="max_results",
-        type=int,
-        default=MAX_RESULTS,
-        metavar="N",
-        help=f"Number of results to fetch (1-100). Default: {MAX_RESULTS}.",
-    )
-    parser.add_argument(
-        "--batch",
-        default=None,
-        metavar="FILE",
-        help="Path to a CSV or JSON batch file with multiple queries.",
-    )
-    parser.add_argument(
-        "--output",
-        default=None,
-        metavar="FILE",
-        help="Output CSV filename. Default: auto-generated timestamped name.",
-    )
+    # Legacy params kept for batch file compatibility
+    parser.add_argument("--lr", default="", metavar="LANG_CODE",
+                        help="Language restrict, e.g. 'lang_fr' (derived to --hl if hl not set).")
+    parser.add_argument("--cr", default="", metavar="COUNTRY_CODE",
+                        help="(Legacy — not used by Serper.dev.)")
+
+    parser.add_argument("--date-restrict", dest="date_restrict", default="", metavar="PERIOD",
+                        help="Restrict to recent results: d1, d7, m1, m3, y1.")
+    parser.add_argument("--max-results", dest="max_results", type=int, default=MAX_RESULTS,
+                        metavar="N", help=f"Number of results (1-100). Default: {MAX_RESULTS}.")
+    parser.add_argument("--batch", default=None, metavar="FILE",
+                        help="CSV or JSON batch file with multiple queries.")
+    parser.add_argument("--output", default=None, metavar="FILE",
+                        help="Output CSV filename (default: auto-timestamped).")
 
     args = parser.parse_args()
 
-    # Resolve convenience aliases vs raw params (raw takes precedence)
     gl_final = args.gl or args.country_shortcut
-    if args.lr:
-        lr_final = args.lr
-    elif args.language_shortcut:
-        lang = args.language_shortcut.strip().lower()
-        lr_final = lang if lang.startswith("lang_") else f"lang_{lang}"
-    else:
-        lr_final = ""
+    hl_final = args.hl if args.hl != "en" else (args.language_shortcut or args.hl)
 
     output_file = args.output or f"search_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
@@ -466,10 +403,10 @@ examples:
         query=args.query,
         max_results=args.max_results,
         gl=gl_final,
-        lr=lr_final,
-        cr=args.cr,
-        hl=args.hl,
+        hl=hl_final,
         date_restrict=args.date_restrict,
+        lr=args.lr,
+        cr=args.cr,
     )
 
     if not results:
