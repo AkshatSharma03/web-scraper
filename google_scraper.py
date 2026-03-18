@@ -122,43 +122,53 @@ def extract_google_results(
     suffix = f" [{locale_info}]" if locale_info else ""
     print(f"🔍 Searching Google for: '{query}'{suffix}")
 
-    payload = {
-        "q": query,
-        "num": min(max_results, 100),
-        "hl": hl or "en",
-    }
-    if gl:
-        payload["gl"] = gl
-    tbs = _map_date_restrict(date_restrict)
-    if tbs:
-        payload["tbs"] = tbs
-
     api_headers = {
         "X-API-KEY": SERPER_API_KEY,
         "Content-Type": "application/json",
     }
-
-    try:
-        resp = requests.post(SERPER_URL, json=payload, headers=api_headers, timeout=REQUEST_TIMEOUT)
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        print(f"❌ API error: {e}")
-        return []
-
-    data = resp.json()
-
-    if "error" in data:
-        print(f"❌ API error: {data['error']}")
-        return []
+    tbs = _map_date_restrict(date_restrict)
 
     results = []
-    for item in data.get("organic", []):
-        results.append({
-            "title": item.get("title", ""),
-            "url": item.get("link", ""),
-            "description": item.get("snippet", "").replace("\n", " "),
-            "content": None,
-        })
+    page = 1
+    # Serper returns 10 results per page; paginate until we have enough
+    while len(results) < max_results:
+        payload = {
+            "q": query,
+            "num": 10,
+            "page": page,
+            "hl": hl or "en",
+        }
+        if gl:
+            payload["gl"] = gl
+        if tbs:
+            payload["tbs"] = tbs
+
+        try:
+            resp = requests.post(SERPER_URL, json=payload, headers=api_headers, timeout=REQUEST_TIMEOUT)
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            print(f"❌ API error: {e}")
+            break
+
+        data = resp.json()
+
+        if "error" in data:
+            print(f"❌ API error: {data['error']}")
+            break
+
+        items = data.get("organic", [])
+        if not items:
+            break
+
+        for item in items:
+            results.append({
+                "title": item.get("title", ""),
+                "url": item.get("link", ""),
+                "description": item.get("snippet", "").replace("\n", " "),
+                "content": None,
+            })
+
+        page += 1
 
     print(f"✅ Found {len(results)} results")
     return results[:max_results]
@@ -180,7 +190,7 @@ def extract_page_content(url: str) -> Optional[str]:
                 tag.decompose()
             content = soup.get_text()
 
-        content = " ".join(content.split())[:2000]
+        content = " ".join(content.split())
         return content if content else None
     except Exception:
         return None
