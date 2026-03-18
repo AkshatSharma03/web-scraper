@@ -1,0 +1,9 @@
+search_results_*.csv
+__pycache__/
+*.pyc
+.venv
+venv
+.idea
+.DS_Store
+output/
+*.log
