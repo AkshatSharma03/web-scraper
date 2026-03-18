@@ -198,7 +198,7 @@ def extract_page_content(url: str) -> Optional[str]:
 
 def fetch_all_content(results: list) -> list:
     """Fetch content from all result pages in parallel."""
-    print(f"\n📥 Fetching content from {len(results)} pages...")
+    print(f"\n📥 Fetching page content from {len(results)} result URLs...")
 
     with ThreadPoolExecutor(max_workers=THREAD_POOL_SIZE) as executor:
         future_to_idx = {
